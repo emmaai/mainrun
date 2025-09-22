@@ -227,8 +227,15 @@ def main():
     
     hyperparams_dict = vars(args)
     logger.log("hyperparameters_configured", **hyperparams_dict)
-    
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+   
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")  # Use MPS
+        print("MPS is available and will be used!")
+    else:
+        device = torch.device("cpu")  # Fallback to CPU
+        print("MPS is not available. Using CPU.")
+
+    # device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.log("device_info", device=device)
 
     train_titles, val_titles = get_titles(args.num_titles, args.seed, args.val_frac)
