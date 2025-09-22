@@ -3,6 +3,7 @@ import math, random, time
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import os
 
 import torch
 import torch.nn as nn
@@ -11,6 +12,8 @@ from datasets import load_dataset
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders
 from tqdm import tqdm
 import structlog
+from helper import plot_model_highlevel, profile_tokenizer
+from torch.utils.tensorboard import SummaryWriter
 
 @dataclass
 class Hyperparameters:
@@ -22,7 +25,7 @@ class Hyperparameters:
     d_model: int = 512
     dropout: float = 0.1
     lr: float = 6e-3
-    weight_decay: float = 0.0
+    weight_decay: float = 0.01
     evals_per_epoch: int = 3
     
     epochs: int = 7
@@ -114,14 +117,23 @@ def train_tokenizer(titles: list[str], vocab_size: int, unk_token: str = "<unk>"
 class BPETokenizer:
     def __init__(self, tokenizer: Tokenizer):
         self.tk = tokenizer
-        self.stoi = {tok: i for tok, i in tokenizer.get_vocab().items()}
-        self.itos = {i: tok for tok, i in tokenizer.get_vocab().items()}
+        # self.stoi = {tok: i for tok, i in tokenizer.get_vocab().items()}
+        # self.itos = {i: tok for tok, i in tokenizer.get_vocab().items()}
 
     def encode(self, s: str) -> list[int]:
         return self.tk.encode(s).ids
 
     def decode(self, ids: list[int]) -> str:
         return self.tk.decode(ids, skip_special_tokens=True)
+
+    def save(self, save_path: str):
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        self.tk.save(save_path)
+    
+    @classmethod
+    def load(cls, load_path: str):
+        tk = Tokenizer.from_file(load_path)
+        return cls(tk)
 
     @property
     def vocab_size(self): return self.tk.get_vocab_size()
@@ -217,6 +229,17 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
         return logits, loss
 
+def train_load_tokeniser(input_titles: list[str], vocab_size: int, eos_token: str, save_path: str="./artefacts/bpe_tokeniser.json", train=True):
+    if train:
+        tok = BPETokenizer(train_tokenizer(input_titles, vocab_size, eos_token=eos_token))
+        tok.save(save_path)
+    else:
+        if os.path.exists(save_path):
+            tok =  BPETokenizer.load(save_path)
+        else:
+            raise ValueError(f"file {save_path} doesn't exist")
+    return tok
+
 def main():
     args = Hyperparameters()
     torch.manual_seed(args.seed)
@@ -229,20 +252,22 @@ def main():
     logger.log("hyperparameters_configured", **hyperparams_dict)
    
     if torch.backends.mps.is_available():
-        device = torch.device("mps")  # Use MPS
+        device = "mps"  # Use MPS
         print("MPS is available and will be used!")
     else:
-        device = torch.device("cpu")  # Fallback to CPU
+        device = "cpu"  # Fallback to CPU
         print("MPS is not available. Using CPU.")
 
     # device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.log("device_info", device=device)
-    return
 
     train_titles, val_titles = get_titles(args.num_titles, args.seed, args.val_frac)
     
     eos_token = "<eos>"
-    tok = BPETokenizer(train_tokenizer(train_titles+val_titles, args.vocab_size, eos_token=eos_token))
+    tok = train_load_tokeniser(train_titles+val_titles, args.vocab_size, eos_token=eos_token, train=False)
+    # stats = profile_tokenizer(tok, train_titles+val_titles)
+    # print(stats)
+
     train_text = eos_token.join(train_titles) + eos_token
     val_text = eos_token.join(val_titles) + eos_token
     train_ids = torch.tensor(tok.encode(train_text), dtype=torch.long)
@@ -267,10 +292,12 @@ def main():
         dropout    = args.dropout,
     )
     model = GPT(cfg).to(device)
+    # plot_model_highlevel(model, [[args.batch_size, args.block_size], [args.batch_size, args.block_size]], [torch.long, torch.long])
+
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
     
-    opt = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max_steps)
 
     def evaluate():
@@ -285,6 +312,7 @@ def main():
         model.train()
         return losses / len(val_text)
 
+    writer = SummaryWriter(log_dir="runs/gpt-2")
     ptr = 0
     step = 0
     t0 = time.time()
@@ -297,6 +325,11 @@ def main():
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
+
+            # Log learning rate
+            current_lr = scheduler.get_last_lr()[0]
+            writer.add_scalar("Learning Rate", current_lr, step)
+
             scheduler.step()
 
             elapsed = time.time() - t0
@@ -314,6 +347,10 @@ def main():
                           max_steps=max_steps,
                           loss=val_loss,
                           elapsed_time=elapsed)
+
+                writer.add_scalar("Loss/Train", loss.item(), step)
+                writer.add_scalar("Loss/Validation", val_loss, step)
+
 
 if __name__ == "__main__":
     try:
