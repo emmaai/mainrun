@@ -1,4 +1,4 @@
-import utils
+# import utils
 import math, random, time
 from dataclasses import dataclass
 import json
@@ -237,6 +237,7 @@ def main():
 
     # device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.log("device_info", device=device)
+    return
 
     train_titles, val_titles = get_titles(args.num_titles, args.seed, args.val_frac)
     
