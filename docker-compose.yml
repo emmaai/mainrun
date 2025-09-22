@@ -1,0 +1,10 @@
+services:
+  dev:
+    image: mainrun-dev:latest
+    volumes:
+      - .:/workspaces/mainrun              
+    working_dir: /workspaces/mainrun
+    command: /bin/bash                    
+    tty: true
+    stdin_open: true
+
