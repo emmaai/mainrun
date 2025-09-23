@@ -17,6 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 import optuna
 import yaml
 from typing import Any
+from sam import SAM
 
 
 @dataclass
@@ -27,7 +28,7 @@ class Hyperparameters:
     n_layer: int = 6
     n_head: int = 8
     d_model: int = 512
-    dropout: float = 0.1
+    dropout: float = 0.2
     lr: float = 6e-3
     weight_decay: float = 0.01
     evals_per_epoch: int = 3
@@ -364,6 +365,7 @@ def suggest_from_config(trial, cfg: dict[str, Any]):
     return params
 
 
+
 def main():
 
     args = Hyperparameters()
@@ -436,10 +438,21 @@ def main():
         model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         logger.log("model_info", parameters_count=model_params)
 
-        opt = torch.optim.AdamW(
-            model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=args.weight_decay
-        )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max_steps)
+        base_opt = torch.optim.AdamW
+        opt = SAM(model.parameters(), base_opt, lr=lr, betas=(0.9, 0.95), weight_decay=args.weight_decay)
+
+        warmup_steps = int(max_steps * 0.1)
+
+        def lr_lambda(current_step: int):
+            if current_step < warmup_steps:
+                # Linear warmup
+                return float(current_step) / float(max(1, warmup_steps))
+            # Cosine decay
+            progress = float(current_step - warmup_steps) / float(max(1, max_steps - warmup_steps))
+            return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+        scheduler = torch.optim.lr_scheduler.LambdaLR(opt.base_optimizer, lr_lambda)
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt.base_optimizer, T_max=max_steps)
 
         def evaluate():
             model.eval()
@@ -467,11 +480,16 @@ def main():
                 xb, yb, ptr = get_batch(
                     train_ids, ptr, block_size, args.batch_size, device
                 )
+                def closure():
+                    _, loss = model(xb, yb)
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    return loss
+
                 _, loss = model(xb, yb)
-                opt.zero_grad(set_to_none=True)
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                opt.step()
+                opt.step(closure)
+                opt.zero_grad()
 
                 # Log learning rate
                 current_lr = scheduler.get_last_lr()[0]
