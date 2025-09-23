@@ -365,7 +365,6 @@ def suggest_from_config(trial, cfg: dict[str, Any]):
     return params
 
 
-
 def main():
 
     args = Hyperparameters()
@@ -395,7 +394,10 @@ def main():
 
         eos_token = "<eos>"
         tok = train_load_tokeniser(
-            train_titles + val_titles, args.vocab_size, eos_token=eos_token, train=cfg.run_configs.train_tok
+            train_titles + val_titles,
+            args.vocab_size,
+            eos_token=eos_token,
+            train=cfg.run_configs.train_tok,
         )
         # profile the tokeniser
         # stats = profile_tokenizer(tok, train_titles+val_titles)
@@ -439,7 +441,15 @@ def main():
         logger.log("model_info", parameters_count=model_params)
 
         base_opt = torch.optim.AdamW
-        opt = SAM(model.parameters(), base_opt, lr=lr, betas=(0.9, 0.95), weight_decay=args.weight_decay)
+        opt = SAM(
+            model.parameters(),
+            base_opt,
+            rho=0.05,
+            adaptive=True,
+            lr=lr,
+            betas=(0.9, 0.95),
+            weight_decay=args.weight_decay,
+        )
 
         warmup_steps = int(max_steps * 0.1)
 
@@ -448,7 +458,9 @@ def main():
                 # Linear warmup
                 return float(current_step) / float(max(1, warmup_steps))
             # Cosine decay
-            progress = float(current_step - warmup_steps) / float(max(1, max_steps - warmup_steps))
+            progress = float(current_step - warmup_steps) / float(
+                max(1, max_steps - warmup_steps)
+            )
             return 0.5 * (1.0 + math.cos(math.pi * progress))
 
         scheduler = torch.optim.lr_scheduler.LambdaLR(opt.base_optimizer, lr_lambda)
@@ -480,6 +492,7 @@ def main():
                 xb, yb, ptr = get_batch(
                     train_ids, ptr, block_size, args.batch_size, device
                 )
+
                 def closure():
                     _, loss = model(xb, yb)
                     loss.backward()
