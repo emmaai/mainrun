@@ -13,7 +13,7 @@ storage:
 tune_configs:
   direction: minimize
   load_if_exists: true
-  study_name: "midtune2"
+  study_name: "smalltune"
 
 hyperparameters:
   lr:           # log-uniform search
@@ -24,6 +24,6 @@ hyperparameters:
     type: uniform
     range: [0.05, 0.2]
 
-  block_size: # categorical choices
-    type: categorical
-    values: [64, 128]
+  # block_size: # categorical choices
+  #   type: categorical
+  #   values: [64, 128]

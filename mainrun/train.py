@@ -12,7 +12,7 @@ from datasets import load_dataset
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders
 from tqdm import tqdm
 import structlog
-from helper import plot_model_highlevel, profile_tokenizer
+from helper import plot_model_highlevel, profile_tokenizer, diagnose_tokenizer
 from torch.utils.tensorboard import SummaryWriter
 import optuna
 import yaml
@@ -22,16 +22,18 @@ from sam import SAM
 
 @dataclass
 class Hyperparameters:
-    block_size: int = 128
+    block_size: int = 64
     batch_size: int = 64
     vocab_size: int = 4_000
-    n_layer: int = 6
-    n_head: int = 6
-    d_model: int = 384
+    n_layer: int = 4
+    n_head: int = 3
+    d_model: int = 192
     dropout: float = 0.1
     lr: float = 6e-3
+    min_lr: float = 1e-5
     weight_decay: float = 0.01
     evals_per_epoch: int = 3
+    warmup_ratio: float = 0.05
 
     epochs: int = 7
     seed: int = 1337
@@ -272,7 +274,7 @@ class GPT(nn.Module):
             loss = None
         else:
             loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)), targets.view(-1), reduction="mean"
+                logits.view(-1, logits.size(-1)), targets.view(-1), reduction="mean",
             )
         return logits, loss
 
@@ -365,6 +367,25 @@ def suggest_from_config(trial, cfg: dict[str, Any]):
     return params
 
 
+def make_lr_lambda(warmup_steps: int, max_steps: int, min_lr: float=1e-5, peak_lr: float=1.1e-3):
+    floor = min_lr / peak_lr
+
+    def lr_lambda(current_step: int):
+        if current_step < warmup_steps:
+            # Linear warmup 0 → 1
+            return float(current_step) / float(max(1, warmup_steps))
+        
+        # Progress through decay
+        progress = float(current_step - warmup_steps) / float(
+            max(1, max_steps - warmup_steps)
+        )
+        # Cosine decay from 1 → floor
+        cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return floor + (1.0 - floor) * cosine_decay
+
+    return lr_lambda
+
+
 def main():
 
     args = Hyperparameters()
@@ -399,6 +420,11 @@ def main():
             eos_token=eos_token,
             train=cfg.run_configs.train_tok,
         )
+
+        # diagnose tokeniser
+        # stats = diagnose_tokenizer(tok, train_titles+val_titles)
+
+
         # profile the tokeniser
         # stats = profile_tokenizer(tok, train_titles+val_titles)
         # print(stats)
@@ -440,31 +466,30 @@ def main():
         model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         logger.log("model_info", parameters_count=model_params)
 
+        decay, no_decay = [], []
+        for n,p in model.named_parameters():
+            if not p.requires_grad: 
+                continue
+            if any(k in n for k in ["bias","norm","Norm","embedding","embeddings"]):
+                no_decay.append(p)
+            else:
+                decay.append(p)
+
         base_opt = torch.optim.AdamW
         opt = SAM(
-            model.parameters(),
+            [{"params": decay, "weight_decay": args.weight_decay},
+             {"params": no_decay, "weight_decay": 0.0}],
             base_opt,
             rho=0.05,
             adaptive=True,
             lr=lr,
             betas=(0.9, 0.95),
-            weight_decay=args.weight_decay,
         )
 
-        warmup_steps = int(max_steps * 0.1)
+        warmup_steps = int(max_steps * args.warmup_ratio)
 
-        def lr_lambda(current_step: int):
-            if current_step < warmup_steps:
-                # Linear warmup
-                return float(current_step) / float(max(1, warmup_steps))
-            # Cosine decay
-            progress = float(current_step - warmup_steps) / float(
-                max(1, max_steps - warmup_steps)
-            )
-            return 0.5 * (1.0 + math.cos(math.pi * progress))
-
+        lr_lambda = make_lr_lambda(warmup_steps, max_steps, min_lr=args.min_lr, peak_lr=lr)
         scheduler = torch.optim.lr_scheduler.LambdaLR(opt.base_optimizer, lr_lambda)
-        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt.base_optimizer, T_max=max_steps)
 
         def evaluate():
             model.eval()
@@ -499,16 +524,17 @@ def main():
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                     return loss
 
+
                 _, loss = model(xb, yb)
                 loss.backward()
                 opt.step(closure)
                 opt.zero_grad()
+                scheduler.step()
 
                 # Log learning rate
                 current_lr = scheduler.get_last_lr()[0]
                 writer.add_scalar("Learning Rate", current_lr, step)
 
-                scheduler.step()
 
                 elapsed = time.time() - t0
                 logger.log(
