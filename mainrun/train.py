@@ -33,7 +33,7 @@ class Hyperparameters:
     min_lr: float = 1e-5
     weight_decay: float = 0.01
     evals_per_epoch: int = 3
-    warmup_ratio: float = 0.05
+    warmup_ratio: float = 0.1
 
     epochs: int = 7
     seed: int = 1337
