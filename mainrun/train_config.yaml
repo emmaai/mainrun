@@ -2,7 +2,7 @@ run_configs:
   tune: false
   train: true
   use_default: false
-  train_tok: false
+  train_tok: true
 
 storage:
   url:  "hyperparameter.db"

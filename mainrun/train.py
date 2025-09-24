@@ -1,4 +1,4 @@
-# import utils
+import utils
 import math, random, time
 from dataclasses import dataclass, field
 import json
@@ -12,8 +12,6 @@ from datasets import load_dataset
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders
 from tqdm import tqdm
 import structlog
-from helper import plot_model_highlevel, profile_tokenizer, diagnose_tokenizer
-from torch.utils.tensorboard import SummaryWriter
 import optuna
 import yaml
 from typing import Any
@@ -507,7 +505,6 @@ def main():
             model.train()
             return losses / len(val_text)
 
-        writer = SummaryWriter(log_dir="runs/gpt-2")
         ptr = 0
         step = 0
         t0 = time.time()
@@ -531,11 +528,6 @@ def main():
                 opt.zero_grad()
                 scheduler.step()
 
-                # Log learning rate
-                current_lr = scheduler.get_last_lr()[0]
-                writer.add_scalar("Learning Rate", current_lr, step)
-
-
                 elapsed = time.time() - t0
                 logger.log(
                     "training_step",
@@ -556,8 +548,6 @@ def main():
                         elapsed_time=elapsed,
                     )
 
-                    writer.add_scalar("Loss/Train", loss.item(), step)
-                    writer.add_scalar("Loss/Validation", val_loss, step)
 
         return val_loss
 
