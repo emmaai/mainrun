@@ -304,6 +304,7 @@ class RunConfigs:
     train: bool = True
     use_default: bool = True
     train_tok: bool = False
+    model_path: str = "models/model_x.pth"
 
 
 @dataclass
@@ -549,7 +550,8 @@ def main():
                     )
 
 
-        return val_loss
+
+        return val_loss, model
 
     def objective(trial):
         hp_cfg = cfg.hyperparameters
@@ -557,7 +559,7 @@ def main():
             raise ValueError(f"Must provide hyperparameters for tial")
 
         hp = suggest_from_config(trial, hp_cfg)
-        loss = train_eval(**hp)
+        loss, _ = train_eval(**hp)
 
         return loss
 
@@ -589,7 +591,14 @@ def main():
         if cfg.run_configs.use_default:
             train_eval(epochs=args.epochs)
         else:
-            train_eval(**study.best_trial.params, epochs=args.epochs)
+            _, model = train_eval(**study.best_trial.params, epochs=args.epochs)
+
+        if cfg.run_configs.model_path is not None:
+            Path(cfg.run_configs.model_path).parent.mkdir(parents=True, exist_ok=True)
+            torch.save({
+                "model_state": model.state_dict(),
+                "config": hyperparams_dict,  # your dict of hyperparams
+            }, cfg.run_configs.model_path)
 
 
 if __name__ == "__main__":
