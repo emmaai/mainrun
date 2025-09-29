@@ -3,7 +3,7 @@ run_configs:
   train: true
   use_default: false
   train_tok: true
-  model_path: models/model_midsize.pth
+  model_path: models/model_smallsize.pth
 
 storage:
   url:  "hyperparameter.db"
